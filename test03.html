@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+<!--The viewport meta tag is used to improve the presentation and behavior of the samples on iOS devices-->
+<meta name="viewport" content="initial-scale=1, maximum-scale=1,user-scalable=no">
+<title>Points in Extent</title>
+<link rel="stylesheet" href="http://localhost:8080/Test01/arcgis_api/js/dojo/dijit/themes/claro/claro.css">
+<link rel="stylesheet" type="text/css" href="http://localhost:8080/Test01/arcgis_api/js/esri/css/esri.css" />
+<script type="text/javascript" src="http://localhost:8080/Test01/arcgis_api/init.js"></script>
+<script>
+dojo.require("esri.map");
+dojo.require("esri.toolbars.draw");
+dojo.require("esri.tasks.query");
+dojo.require("esri.tasks.gp");
+//全局变量
+var map, defaultSymbol, highlightSymbol, resultTemplate;
+
+function init() {
+	//创建map,加载到地图
+	map = new esri.Map("map");
+	basemap = new esri.layers.ArcGISDynamicMapServiceLayer("http://localhost:6080/arcgis/rest/services/ENENENmap/MapServer");
+	map.addLayer(basemap);
+	dojo.connect(map, "onLoad", initToolbar); //加载地图时初始化一个Toolbar用于画矩形
+
+	//定义符号
+	defaultSymbol = new esri.symbol.SimpleMarkerSymbol().setColor(new dojo.Color([ 0, 0, 255 ]));
+	highlightSymbol = new esri.symbol.SimpleMarkerSymbol().setColor(new dojo.Color([ 255, 0, 0 ]));
+	//初始化并执行查询
+	var queryTask = new esri.tasks.QueryTask("http://localhost:6080/arcgis/rest/services/ENENENmap/MapServer/0");
+	var query = new esri.tasks.Query();
+	query.where = " POINT_X_2 <> 0 AND POINT_Y_2 <> 0 ";
+	//         query.outSpatialReference = {wkid:102100}; 
+	query.returnGeometry = true;
+	query.outFields = [ "*" ];
+	queryTask.execute(query, addPointsToMap);
+	//info template
+	resultTemplate = new esri.InfoTemplate("Camera","<tr><td>${DESC_}</tr></td>");
+}
+
+//初始化toolbar
+function initToolbar(map) {
+	var tb = new esri.toolbars.Draw(map);
+	dojo.connect(tb, "onDrawEnd", findPointsInExtent);
+	tb.activate(esri.toolbars.Draw.EXTENT);
+}
+
+//对于选中点设置符号和infoTemplate
+function addPointsToMap(featureSet) {
+	var graphic
+	for (var i = 0; i < featureSet.features.length; i++) {
+		resultGraphic = new esri.Graphic(featureSet.features[i]);
+		graphic = resultGraphic.geometry;
+		graphic.setSymbol(defaultSymbol);
+		graphic.setInfoTemplate(resultTemplate);
+		map.graphics.add(graphic);
+	}
+}
+
+//通过extent参数寻找点
+function findPointsInExtent(extent) {
+	//alert("findPointsInExtent");
+	var results = [];
+	dojo.forEach(map.graphics.graphics, function(graphic) {
+		if (extent.contains(graphic.geometry)) {
+			graphic.setSymbol(highlightSymbol);
+			results.push(graphic.getContent());
+			tojob(graphic); //框选的点生成扇形
+		}
+		//还原高亮但并没有选中点的符号
+		else if (graphic.symbol == highlightSymbol) {
+			graphic.setSymbol(defaultSymbol);
+		}
+	});
+	//选中点的数量
+	dojo.byId("inextent").innerHTML = results.length;
+	//显示选中点
+	dojo.byId("results").innerHTML = "<table><tbody>" + results.join("")
+			+ "</tbody></table>";
+}
+
+function tojob(graphic) {
+	//第一步构造GP
+	var gpUrl = 'http://localhost:6080/arcgis/rest/services/ENENEN/GPServer/SectorModel';
+	gp = new esri.tasks.Geoprocessor(gpUrl);
+	var cameraname = graphic.attributes.CAMERANAME;//摄像头点名 
+	var xcoorder = graphic.attributes.POINT_X_2; //x坐标
+	var ycoorder = graphic.attributes.POINT_Y_2; //y坐标
+	var angleTemp = graphic.attributes.Azimuthdeg; //方向角
+	var radiusTemp = graphic.attributes.RADIUS; //半径
+	var parms = {
+		"cameraName" : cameraname,
+		"xCoorder" : xcoorder,
+		"yCoorder" : ycoorder,
+		"radius" : radiusTemp,
+		"angle" : angleTemp
+	};
+	console.log(parms);
+	gp.submitJob(parms,jobResult);
+}
+function jobResult(result) {
+    var jobId = result.jobId;   
+    var status = result.jobStatus;
+    if(status === esri.tasks.JobInfo.STATUS_SUCCEEDED) {
+        //成功之后，将其中的结果取出来，当然这也是参数名字。
+        //在模型中，想要取出中间结果，需要设置为模型参数
+        console.log(jobId);
+        gp.getResultData(jobId, "test", addSectorResults);
+    }
+}
+//将缓冲添加到地图上
+function addSectorResults(results) {
+    console.log(results);
+    var features = results.value.features;
+    for(var i = 0, length = features.length; i != length; ++i) {
+        var feature = features[i];
+        var polySymbolRed = new esri.symbol.SimpleFillSymbol();
+        polySymbolRed.setOutline(new esri.symbol.SimpleLineSymbol(esri.symbol.SimpleLineSymbol.STYLE_SOLID, new dojo.Color([0, 0, 0, 0.5]), 1));
+        polySymbolRed.setColor(new dojo.Color([255, 0, 0, 0.5]));
+        feature.setSymbol(polySymbolRed);
+        map.graphics.add(feature);
+    }
+}
+
+dojo.addOnLoad(init);
+</script>
+
+</head>
+<body class="claro">
+Draw an Extent on the map to find all points within this extent
+<!-- map div -->
+<div id="map" style="width: 800px; height: 400px; border: 1px solid #000;"></div>
+<br />
+<!-- display number of points in drawn extent -->
+<b># of points in extent = <span id="inextent">0</span></b>
+<!-- list points in extent -->
+<div id="results" style="width: 400px; height: 200px; border: 1px solid #000; overflow: auto;">
+<br />
+<span id="status" style='position:absolute;bottom:5px;'></span>  
+</div>
+</body>
+</html>
